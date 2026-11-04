@@ -1,4 +1,3 @@
-
 name: Pipeline
 
 on:
@@ -20,6 +19,7 @@ jobs:
 
     steps:
       - name: Checkout repository
+        id: checkout
         uses: actions/checkout@v7
 
       - name: Setup Node.js
@@ -29,11 +29,12 @@ jobs:
 
       - name: Validate HTML
         run: npx --yes html-validate@11.17.0 index.html
+
       - name: Build Docker image
         id: docker_build
-        if: always()
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
         run: docker build -t dedus277-ci-cd-lab:ci .
-      
+
       - name: Run test container
         id: run_container
         if: ${{ always() && steps.docker_build.outcome == 'success' }}
@@ -42,6 +43,8 @@ jobs:
       - name: Smoke test container
         if: ${{ always() && steps.run_container.outcome == 'success' }}
         run: |
+          set -x
+
           for attempt in {1..10}; do
             if curl --fail --silent http://localhost:8080 -o /tmp/site.html; then
               break
@@ -49,18 +52,23 @@ jobs:
             sleep 1
           done
 
-          grep -q "Dedus277" /tmp/site.html
-          echo "OK"
+          if grep -q "Dedus277" /tmp/site.html; then
+            echo "Dedus277 found"
+            echo "OK"
+          else
+            grep_status=$?
+            echo "grep exit code: ${grep_status}"
+            exit "${grep_status}"
+          fi
 
       - name: Cleanup test container
         if: always()
         run: docker rm -f site-test || true
-        
+
   release:
     name: Release
     runs-on: ubuntu-24.04
     needs: ci
-    if: github.event_name == 'push'
 
     permissions:
       contents: read
@@ -68,12 +76,15 @@ jobs:
 
     steps:
       - name: Checkout repository
+        if: github.event_name == 'push'
         uses: actions/checkout@v7
 
       - name: Setup Docker Buildx
+        if: github.event_name == 'push'
         uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
+        if: github.event_name == 'push'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -81,6 +92,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Docker metadata
+        if: github.event_name == 'push'
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -90,10 +102,10 @@ jobs:
             type=sha
 
       - name: Build and push
+        if: github.event_name == 'push'
         uses: docker/build-push-action@v7
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-

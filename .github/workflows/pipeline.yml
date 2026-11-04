@@ -1,0 +1,99 @@
+
+name: Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Validate HTML
+        run: npx --yes html-validate@11.17.0 index.html
+      - name: Build Docker image
+        id: docker_build
+        if: always()
+        run: docker build -t dedus277-ci-cd-lab:ci .
+      
+      - name: Run test container
+        id: run_container
+        if: ${{ always() && steps.docker_build.outcome == 'success' }}
+        run: docker run -d --name site-test -p 8080:80 dedus277-ci-cd-lab:ci
+
+      - name: Smoke test container
+        if: ${{ always() && steps.run_container.outcome == 'success' }}
+        run: |
+          for attempt in {1..10}; do
+            if curl --fail --silent http://localhost:8080 -o /tmp/site.html; then
+              break
+            fi
+            sleep 1
+          done
+
+          grep -q "Dedus277" /tmp/site.html
+          echo "OK"
+
+      - name: Cleanup test container
+        if: always()
+        run: docker rm -f site-test || true
+        
+  release:
+    name: Release
+    runs-on: ubuntu-24.04
+    needs: ci
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/dedus277/dedus277-ci-cd-lab
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
